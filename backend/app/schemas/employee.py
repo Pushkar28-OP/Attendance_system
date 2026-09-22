@@ -25,4 +25,3 @@ class EmployeeResponse(BaseModel):
     department: str
     role: str
     is_active: bool
-    has_face_registered: bool

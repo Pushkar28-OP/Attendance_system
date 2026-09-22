@@ -1,34 +1,58 @@
+import logging
 from datetime import datetime, timezone
-from app.core.config import get_settings
+from zoneinfo import ZoneInfo
 from app.db.mongodb import get_db
 from app.models.attendance import attendance_document
 from app.models.audit import audit_event
-from app.services.face_service import face_service
-from app.services.liveness_service import verify_liveness
-from app.services.location_service import verify_location
+from app.services.geocoding_service import reverse_geocode_location
 
 
 REASONS = {
-    "NO_FACE": "Face verification failed.",
-    "FACE_MISMATCH": "Face verification failed.",
-    "LIVENESS_FAILED": "Liveness verification failed. Please follow the camera prompt.",
-    "LOCATION_ACCURACY_INSUFFICIENT": "Location accuracy is insufficient. Please try again.",
-    "LOCATION_OUTSIDE_GEOFENCE": "Please move into the Aurelix office location.",
-    "OFFICE_LOCATION_NOT_CONFIGURED": "Office location is not configured.",
     "ALREADY_CHECKED_IN": "You have already checked in today.",
     "NOT_CHECKED_IN": "You must check in before checking out.",
     "ALREADY_CHECKED_OUT": "You have already checked out today.",
 }
 
+logger = logging.getLogger(__name__)
+KOLKATA_TIME_ZONE = ZoneInfo("Asia/Kolkata")
 
-def _rejected(reason: str, face_score=None, liveness_score=None, distance=None, location_diagnostics=None) -> dict:
-    return {"success": False, "status": "REJECTED", "reason": reason, "message": REASONS.get(reason, "Attendance verification was rejected."), "face_verified": False, "liveness_verified": False, "location_verified": False, "face_match_score": face_score, "liveness_score": liveness_score, "office_distance": distance, "location_diagnostics": location_diagnostics, "timestamp": datetime.now(timezone.utc)}
+
+def _rejected(reason: str) -> dict:
+    return {"success": False, "status": "REJECTED", "reason": reason, "message": REASONS.get(reason, "Attendance action was rejected."), "timestamp": datetime.now(timezone.utc)}
+
+
+def _location(payload) -> dict | None:
+    if payload.latitude is None or payload.longitude is None:
+        return None
+    location = {"latitude": payload.latitude, "longitude": payload.longitude, "source": getattr(payload, "source", None) or "browser"}
+    if payload.accuracy is not None:
+        location["accuracy"] = payload.accuracy
+    resolved = reverse_geocode_location(payload.latitude, payload.longitude)
+    if resolved:
+        location.update(resolved)
+    return location
+
+
+def _record_audit_event(db, employee_id: str, action: str, location_available: bool) -> None:
+    try:
+        db.audit_logs.insert_one(
+            audit_event(
+                "SUCCESSFUL_ATTENDANCE",
+                employee_id,
+                "ACCEPTED",
+                {"action": action, "location_available": location_available},
+            )
+        )
+    except Exception:
+        # Attendance has already been committed. An audit-log outage must not make it look unsuccessful.
+        logger.exception("Attendance recorded but the audit event could not be saved")
 
 
 def verify_and_record(employee: dict, payload) -> dict:
     db = get_db()
     employee_id = employee["employee_id"]
-    today = datetime.now(timezone.utc).date().isoformat()
+    now = datetime.now(timezone.utc)
+    today = now.astimezone(KOLKATA_TIME_ZONE).date().isoformat()
     existing = db.attendance.find_one({"employee_id": employee_id, "date": today})
     if payload.action == "check_in" and existing and existing.get("check_in_time"):
         return _rejected("ALREADY_CHECKED_IN")
@@ -36,38 +60,23 @@ def verify_and_record(employee: dict, payload) -> dict:
         return _rejected("NOT_CHECKED_IN")
     if payload.action == "check_out" and existing and existing.get("check_out_time"):
         return _rejected("ALREADY_CHECKED_OUT")
-    try:
-        captured = face_service.extract(payload.image)
-        stored = employee.get("face_embedding")
-        if not stored:
-            return _rejected("NO_FACE")
-        face_score = face_service.similarity(captured.embedding, stored)
-    except (ValueError, RuntimeError):
-        db.audit_logs.insert_one(audit_event("FACE_VERIFICATION_FAILURE", employee_id, "REJECTED"))
-        return _rejected("NO_FACE")
-    if face_score < get_settings().face_match_threshold:
-        db.audit_logs.insert_one(audit_event("FACE_VERIFICATION_FAILURE", employee_id, "REJECTED", {"score": round(face_score, 4)}))
-        return _rejected("FACE_MISMATCH", face_score=face_score)
-    live, liveness_score = verify_liveness(payload.liveness_frames, captured.embedding)
-    if not live:
-        db.audit_logs.insert_one(audit_event("LIVENESS_FAILURE", employee_id, "REJECTED"))
-        return _rejected("LIVENESS_FAILED", face_score, liveness_score)
-    settings = get_settings()
-    location_ok, distance, location_reason = verify_location(payload.latitude, payload.longitude, payload.accuracy)
-    location_diagnostics = {"browser_latitude": payload.latitude, "browser_longitude": payload.longitude, "accuracy_meters": payload.accuracy, "office_latitude": settings.office_latitude, "office_longitude": settings.office_longitude, "distance_meters": distance, "status": "INSIDE" if location_ok else "OUTSIDE"}
-    if not location_ok:
-        db.audit_logs.insert_one(audit_event("LOCATION_VERIFICATION_FAILURE", employee_id, "REJECTED", {"distance": distance, "accuracy": payload.accuracy}))
-        return _rejected(location_reason or "LOCATION_OUTSIDE_GEOFENCE", face_score, liveness_score, distance, location_diagnostics)
-    now = datetime.now(timezone.utc)
+    location = _location(payload)
     if not existing:
-        existing = attendance_document(employee_id, today)
-        existing.update({"face_match_score": face_score, "liveness_score": liveness_score, "latitude": payload.latitude, "longitude": payload.longitude, "location_accuracy": payload.accuracy, "office_distance": distance, "face_verification_status": "VERIFIED", "location_verification_status": "VERIFIED", "final_status": "PRESENT", "check_in_time": now, "updated_at": now})
+        existing = attendance_document(employee_id, today, employee.get("full_name"))
+        existing.update({"final_status": "PRESENT", "check_in_time": now, "check_in_location": location, "updated_at": now})
         try:
             db.attendance.insert_one(existing)
         except Exception:
             return _rejected("ALREADY_CHECKED_IN")
+    elif payload.action == "check_in":
+        db.attendance.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"user_name": existing.get("user_name") or employee.get("full_name"), "final_status": "PRESENT", "check_in_time": now, "check_in_location": location, "check_out_time": None, "check_out_location": None, "updated_at": now}},
+        )
     else:
-        existing.update({"check_out_time": now, "updated_at": now})
-        db.attendance.replace_one({"_id": existing["_id"]}, existing)
-    db.audit_logs.insert_one(audit_event("SUCCESSFUL_ATTENDANCE", employee_id, "ACCEPTED", {"action": payload.action, "distance": round(distance, 2)}))
-    return {"success": True, "status": "PRESENT", "reason": None, "message": "Attendance confirmed.", "face_verified": True, "liveness_verified": True, "location_verified": True, "face_match_score": face_score, "liveness_score": liveness_score, "office_distance": distance, "location_diagnostics": location_diagnostics, "timestamp": now}
+        db.attendance.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"user_name": existing.get("user_name") or employee.get("full_name"), "final_status": "PRESENT", "check_out_time": now, "check_out_location": location, "updated_at": now}},
+        )
+    _record_audit_event(db, employee_id, payload.action, location is not None)
+    return {"success": True, "status": "PRESENT", "reason": None, "message": "Attendance recorded.", "timestamp": now}

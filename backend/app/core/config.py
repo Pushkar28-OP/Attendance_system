@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,16 +14,23 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(default="change-me-in-env", validation_alias="JWT_SECRET")
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(default=480, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES")
-    face_match_threshold: float = Field(default=0.45, validation_alias="FACE_MATCH_THRESHOLD")
-    office_latitude: float | None = Field(default=None, validation_alias="OFFICE_LATITUDE")
-    office_longitude: float | None = Field(default=None, validation_alias="OFFICE_LONGITUDE")
-    office_radius_meters: float = Field(default=150, validation_alias="OFFICE_RADIUS_METERS")
-    cors_origins: list[str] = Field(default=["http://localhost:5173"], validation_alias="CORS_ORIGINS")
+    cors_origins: list[str] = Field(default=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"], validation_alias="CORS_ORIGINS")
+    reverse_geocode_url: str = Field(default="https://nominatim.openstreetmap.org/reverse", validation_alias="REVERSE_GEOCODE_URL")
+    reverse_geocode_user_agent: str = Field(default="AurelixSmartAttendance/1.0", validation_alias="REVERSE_GEOCODE_USER_AGENT")
+    reverse_geocode_timeout_seconds: float = Field(default=3.0, validation_alias="REVERSE_GEOCODE_TIMEOUT_SECONDS")
+    google_maps_api_key: str | None = Field(default=None, validation_alias="GOOGLE_MAPS_API_KEY")
+    google_geocode_url: str = Field(default="https://maps.googleapis.com/maps/api/geocode/json", validation_alias="GOOGLE_GEOCODE_URL")
 
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_origins(cls, value):
         if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return [str(origin).strip() for origin in parsed if str(origin).strip()]
+            except json.JSONDecodeError:
+                pass
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 

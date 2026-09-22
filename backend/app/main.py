@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from app.api import auth, employees, attendance, face, admin, audit
+from app.api import auth, employees, attendance, admin, audit
 from app.core.config import get_settings
 from app.db.mongodb import init_indexes
 
@@ -38,6 +38,5 @@ def health():
 app.include_router(auth.router)
 app.include_router(employees.router)
 app.include_router(attendance.router)
-app.include_router(face.router)
 app.include_router(admin.router)
 app.include_router(audit.router)

@@ -1,37 +1,34 @@
 # Aurelix Smart Attendance
 
-A production-oriented MVP for internal employee attendance. A check-in is accepted only after authenticated identity, a single-face embedding match, a short motion-based liveness challenge, and an office geofence check all pass.
-
-> **MVP security note:** liveness currently verifies natural frame-to-frame embedding movement. It is deliberately isolated behind `backend/app/services/liveness_service.py` so a calibrated anti-spoofing model can replace it before high-security production use.
+A production-oriented MVP for internal employee attendance. Employees sign in, then check in or check out with a server-side timestamp and an optional one-time browser location capture.
 
 ## Architecture
 
-- **Frontend:** React, Vite, Tailwind CSS, React Router, Axios, browser camera and geolocation APIs.
+- **Frontend:** React, Vite, React Router, Axios, browser geolocation API.
 - **Backend:** FastAPI, Pydantic, Uvicorn, JWT, bcrypt, SlowAPI.
 - **Database:** MongoDB / MongoDB Atlas through PyMongo.
-- **Computer vision:** InsightFace ArcFace embeddings with OpenCV image decoding. Raw face images are not persisted.
 - **Cloud readiness:** stateless API, environment configuration, CORS allowlist, no local file storage.
 
-The verification service runs: authenticated employee -> face extraction -> embedding similarity -> liveness -> Haversine geofence -> duplicate check -> attendance write and audit event.
+The attendance service runs: authenticated employee -> duplicate/open-record checks -> optional location storage -> attendance write and audit event.
 
 ## Structure
 
 ```text
 backend/
   app/
-    api/              auth, employees, attendance, face, admin, audit routes
+    api/              auth, employees, attendance, admin, audit routes
     core/             settings and JWT/password security
     db/               MongoDB client and indexes
     models/           persistence document builders
     schemas/          validated request/response models
-    services/         face, liveness, location, attendance decision engine
-    utils/            Haversine distance helper
+    services/         attendance write logic
   scripts/create_admin.py
   tests/test_core.py
 frontend/
-  src/App.jsx         authenticated shell, login, employee and admin views
-  src/services/api.js Axios client
-  src/styles.css      responsive enterprise UI
+  src/App.jsx                  authenticated shell, login, employee and admin views
+  src/LocationAttendance.jsx   check-in/check-out flow
+  src/services/api.js          Axios client
+  src/styles.css               responsive enterprise UI
 ```
 
 ## Prerequisites
@@ -39,17 +36,9 @@ frontend/
 - Python 3.11+
 - Node.js 20+
 - MongoDB 7+ locally or a MongoDB Atlas cluster
-- A browser with camera and geolocation support; camera/geolocation generally require HTTPS outside localhost
+- A browser with geolocation support if you want locations stored
 
 ## Setup
-
-From the repository root:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Edit `.env`. Set `OFFICE_LATITUDE`, `OFFICE_LONGITUDE`, and `OFFICE_RADIUS_METERS` to the authorized Aurelix office. Never commit `.env`.
 
 ### Backend
 
@@ -62,14 +51,6 @@ $env:PYTHONPATH = (Get-Location).Path
 uvicorn app.main:app --reload
 ```
 
-For camera enrollment and ArcFace verification, install the optional biometric runtime as well:
-
-```powershell
-pip install -r requirements-face.txt
-```
-
-InsightFace includes native dependencies and may require compatible prebuilt wheels or Microsoft C++ Build Tools on Windows. The rest of the API and its tests do not require that optional package.
-
 The API is available at `http://localhost:8000` and OpenAPI docs at `http://localhost:8000/docs`.
 
 ### Frontend
@@ -78,14 +59,13 @@ In another terminal:
 
 ```powershell
 cd frontend
-Copy-Item .env.example .env
 npm install
 npm run dev
 ```
 
 Open `http://localhost:5173`.
 
-## Environment variables
+## Environment Variables
 
 | Variable | Purpose |
 | --- | --- |
@@ -94,15 +74,15 @@ Open `http://localhost:5173`.
 | `JWT_SECRET` | Long random signing secret |
 | `JWT_ALGORITHM` | JWT algorithm, normally `HS256` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Token lifetime |
-| `FACE_MATCH_THRESHOLD` | Calibrated cosine similarity threshold |
-| `OFFICE_LATITUDE`, `OFFICE_LONGITUDE` | Authorized office coordinates |
-| `OFFICE_RADIUS_METERS` | Geofence radius |
 | `CORS_ORIGINS` | Comma-separated frontend origins |
+| `REVERSE_GEOCODE_URL` | Reverse-geocoding endpoint; defaults to OpenStreetMap Nominatim |
+| `REVERSE_GEOCODE_USER_AGENT` | Descriptive User-Agent sent to the reverse-geocoding provider |
+| `REVERSE_GEOCODE_TIMEOUT_SECONDS` | Maximum reverse-geocoding request time |
+| `GOOGLE_MAPS_API_KEY` | Optional backend-only Google Maps Geocoding API key; when set, Google address components are used |
+| `GOOGLE_GEOCODE_URL` | Google Geocoding endpoint |
 | `VITE_API_URL` | Frontend API base URL |
 
-The face threshold is not universally secure; calibrate it with representative enrollment and verification data for the chosen model and environment.
-
-## First admin and employee registration
+## First Admin And Employee Registration
 
 With the backend virtual environment active and MongoDB reachable:
 
@@ -114,27 +94,35 @@ python scripts/create_admin.py
 
 The script prompts for credentials unless `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME`, and `ADMIN_EMPLOYEE_ID` are set in the process environment. The password is hashed with bcrypt.
 
-Sign in as the admin, open **People**, and create an employee. Face enrollment is intentionally admin-only and is available through the API:
+Sign in as the admin and open **People** to create and manage employees.
 
-```powershell
-curl -X POST http://localhost:8000/api/face/register `
-  -H "Authorization: Bearer <admin-token>" `
-  -H "Content-Type: application/json" `
-  -d '{"employee_id":"EMP-001","image":"data:image/jpeg;base64,<frame>"}'
-```
+## Attendance Flow
 
-The production UI should expose this same endpoint through an admin camera enrollment screen; the API already rejects missing/multiple/low-quality faces and stores only the embedding.
+1. Employee signs in and receives a JWT.
+2. Employee clicks **Check in** or **Check out**.
+3. The frontend requests the current browser location once.
+4. If location is available, latitude, longitude, and accuracy are sent to the backend. The backend resolves a concise area name through reverse geocoding; if that lookup fails, the attendance action still continues with the coordinates.
+5. The backend records the official server-side timestamp, authenticated employee identity, coordinates, and resolved area when available.
+6. The backend prevents a second check-in before check-out and prevents check-out without an active check-in.
+7. Attendance history displays the resolved area and city for check-in/check-out locations and retains coordinates and accuracy in the stored record.
 
-## Attendance flow
+The application does not continuously track employees and does not reject attendance based on coordinates.
 
-1. Employee signs in and receives a short-lived JWT.
-2. The browser requests camera access only on the attendance page.
-3. The employee captures a frame and a small frame burst.
-4. The backend extracts an ArcFace embedding, compares it to the registered embedding, checks liveness movement, then requests and verifies GPS coordinates against the configured Haversine geofence.
-5. The unique employee/date index prevents duplicate check-ins.
-6. Accepted and rejected decisions are written to separate attendance and audit records.
+### Location behavior
 
-Location is collected only during the verification action. The application does not continuously track employees.
+Each Check In or Check Out requests a fresh browser geolocation fix with high accuracy enabled, then temporarily watches position updates for up to 15 seconds. The best (lowest) browser-reported accuracy is selected; collection stops early when accuracy reaches 30 meters or better. This is a one-time capture only and is stopped before attendance is submitted.
+
+Accuracy is reported from the device without claiming false precision:
+
+- 30 meters or better: High accuracy
+- 31-100 meters: Approximate location
+- Above 100 meters: Low accuracy
+
+Phones with GPS generally provide better fixes. Laptops and desktops may use Wi-Fi or IP-based positioning and may report an inaccurate or approximate position; the application stores and displays the actual browser result rather than changing it to an expected address. Location records include `source: "browser"`, coordinates, accuracy, and the resolved area/city when available.
+
+If permission is denied or the device cannot determine a position, attendance still succeeds with a null location. If reverse geocoding fails, attendance still succeeds with coordinates retained and the UI displays `Area unavailable`. Backend/API failures are reported separately as attendance request errors.
+
+To test on a phone, serve the frontend over HTTPS or use a supported localhost setup, open it on the phone, allow browser location access, and perform Check In and Check Out. To test on a laptop, use Chrome, Edge, Firefox, or Safari over localhost/HTTPS and compare the stored accuracy; do not expect a laptop without GPS to match phone-level precision.
 
 ## Testing
 
@@ -154,12 +142,8 @@ npm run build
 ## Troubleshooting
 
 - **MongoDB unavailable:** confirm `MONGODB_URI`, network access, Atlas IP allowlist, and that MongoDB is running. The API still starts for health checks but data endpoints need MongoDB.
-- **Camera blocked:** use localhost or HTTPS, allow camera permission, and avoid another application using the camera.
-- **Location rejected:** enable high-accuracy location, retry outdoors or near a window, and check `accuracy` against the office radius.
-- **Face service unavailable:** install the backend requirements and ensure the machine can download InsightFace model assets on first use. CPU inference is supported but model initialization is intentionally lazy.
+- **Location unavailable:** the attendance action still records server time and employee identity. Check browser permissions if location should be stored.
 
-## Deployment and security considerations
+## Deployment And Security Considerations
 
 Deploy the frontend and backend separately, set the deployed frontend origin in `CORS_ORIGINS`, use Atlas TLS, rotate `JWT_SECRET`, and provide secrets through the platform secret manager. Run behind HTTPS, add a managed rate limit/WAF, monitor audit events, restrict MongoDB network access, and use a dedicated service account with least privilege.
-
-Before high-security use, add a presentation-attack detection model, encrypted embedding fields or a managed biometric vault, consent/retention policies, device risk signals, stronger enrollment review, alerting, and independent biometric/privacy review.

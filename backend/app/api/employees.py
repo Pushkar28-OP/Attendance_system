@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api/employees", tags=["employees"])
 
 @router.get("")
 def list_employees(_claims: dict = Depends(require_admin)):
-    return [public_employee(item) for item in get_db().employees.find({"is_active": True}, {"password_hash": 0, "face_embedding": 0}).sort("full_name", 1)]
+    return [public_employee(item) for item in get_db().employees.find({"is_active": True}, {"password_hash": 0}).sort("full_name", 1)]
 
 @router.post("", status_code=201)
 def create_employee(payload: EmployeeCreate, claims: dict = Depends(require_admin)):

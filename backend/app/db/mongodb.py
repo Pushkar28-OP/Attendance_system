@@ -1,3 +1,5 @@
+from datetime import timezone
+
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from app.core.config import get_settings
 
@@ -7,7 +9,7 @@ _client: MongoClient | None = None
 def get_client() -> MongoClient:
     global _client
     if _client is None:
-        _client = MongoClient(get_settings().mongodb_uri, serverSelectionTimeoutMS=3000)
+        _client = MongoClient(get_settings().mongodb_uri, serverSelectionTimeoutMS=3000, tz_aware=True, tzinfo=timezone.utc)
     return _client
 
 
