@@ -17,6 +17,7 @@ REASONS = {
     "OFFICE_LOCATION_NOT_CONFIGURED": "Office location is not configured.",
     "ALREADY_CHECKED_IN": "You have already checked in today.",
     "NOT_CHECKED_IN": "You must check in before checking out.",
+    "ALREADY_CHECKED_OUT": "You have already checked out today.",
 }
 
 
@@ -33,6 +34,8 @@ def verify_and_record(employee: dict, payload) -> dict:
         return _rejected("ALREADY_CHECKED_IN")
     if payload.action == "check_out" and (not existing or not existing.get("check_in_time")):
         return _rejected("NOT_CHECKED_IN")
+    if payload.action == "check_out" and existing and existing.get("check_out_time"):
+        return _rejected("ALREADY_CHECKED_OUT")
     try:
         captured = face_service.extract(payload.image)
         stored = employee.get("face_embedding")

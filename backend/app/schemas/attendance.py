@@ -14,11 +14,14 @@ class AttendanceResponse(BaseModel):
     success: bool
     status: str
     reason: str | None = None
+    message: str | None = None
     face_verified: bool = False
     liveness_verified: bool = False
     location_verified: bool = False
     face_match_score: float | None = None
+    liveness_score: float | None = None
     office_distance: float | None = None
+    location_diagnostics: dict | None = None
     timestamp: datetime | None = None
 
 class AttendanceRecord(BaseModel):
