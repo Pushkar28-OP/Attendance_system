@@ -10,3 +10,113 @@
 @media(max-width:600px){body{overflow-x:hidden}.main-content{padding-bottom:calc(45px + env(safe-area-inset-bottom))}.topbar{gap:12px;margin-bottom:20px}.topbar h1{max-width:calc(100vw - 90px);overflow-wrap:anywhere}.sidebar{padding-top:calc(17px + env(safe-area-inset-top))}.sidebar nav{scrollbar-width:none}.sidebar nav::-webkit-scrollbar{display:none}.nav-item,.mode,.primary-button,.ghost-button{min-height:44px}.hero-strip{margin-inline:0}.attendance-grid,.admin-people-grid{min-width:0}.verification-panel{overflow:hidden}.mode-switch{width:100%}.mode{flex:1}.table-scroll{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}.table-scroll table{min-width:620px}.admin-people-grid .panel{min-width:0}.employee-form input,.panel select{min-height:44px;width:100%}.error-box,.success-box{overflow-wrap:anywhere}.login-card{padding:34px 20px}.login-card input{min-height:48px}.login-card .primary-button{width:100%;justify-content:center}}
 @media(min-width:601px) and (max-width:1024px){.main-content{padding-inline:28px}.admin-people-grid{grid-template-columns:1fr}.table-scroll{overflow-x:auto}}
 .location-status{display:flex;align-items:center;gap:8px;margin-top:12px;padding:12px 14px;border:1px solid var(--line);color:var(--cyan);font-size:13px}.location-diagnostics{display:grid;gap:7px;margin-top:12px;padding:14px;border:1px dashed var(--line);background:rgba(4,11,19,.55);font-size:12px;line-height:1.45}.location-diagnostics h4{margin:0 0 3px;color:var(--cyan);font-family:'Space Grotesk';font-size:13px}.location-diagnostics span{color:var(--muted);display:inline-block;min-width:78px}
+
+/* Responsive layout: keep overflow inside the component that owns it. */
+html{overflow-x:hidden}body{overflow-x:hidden}.app-shell,.main-content,.panel,.hero-strip,.attendance-grid,.admin-dashboard-grid,.admin-people-grid{min-width:0}.panel{max-width:100%}.topbar h1,.hero-strip h2,.hero-strip p,.panel h2,.panel h3{overflow-wrap:anywhere}.primary-button,.ghost-button,.nav-item,.icon-button,input,select{min-height:44px}.primary-button:focus-visible,.ghost-button:focus-visible,.nav-item:focus-visible,.icon-button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}.table-scroll{width:100%;max-width:100%;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch}.table-scroll table{min-width:680px}.history-list{min-width:0}.location-details{max-width:100%}
+
+@media (max-width: 1100px){
+	.main-content{padding-inline:28px}
+	.admin-dashboard-grid{grid-template-columns:minmax(220px,.8fr) minmax(0,1.4fr)}
+	.admin-people-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+@media (max-width: 900px){
+	.sidebar{width:220px}
+	.main-content{padding:24px 22px 48px}
+	.topbar{gap:16px;margin-bottom:24px}
+	.attendance-grid,.admin-dashboard-grid,.admin-people-grid{grid-template-columns:1fr}
+	.admin-people-grid .panel:last-child{grid-column:auto}
+	.calendar-panel{width:100%}
+	.login-page{grid-template-columns:1fr;min-height:100svh}
+	.login-visual{min-height:360px;padding:38px 8vw}
+	.login-card{max-width:680px;width:100%;justify-self:center;padding:40px 8vw}
+	.attendance-history-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 14px;align-items:start}
+	.attendance-history-row>b{grid-column:1/-1}
+	.attendance-history-row .location-details{min-width:0}
+}
+
+@media (max-width: 600px){
+	.app-shell{display:block}
+	.sidebar{width:100%;padding:calc(14px + env(safe-area-inset-top)) 14px 14px;border-right:0;border-bottom:1px solid var(--line)}
+	.sidebar .brand-logo{width:min(190px,58vw);max-height:48px}
+	.sidebar .workspace-label{display:none}
+	.sidebar nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:14px;overflow:visible}
+	.sidebar .nav-item{justify-content:center;min-width:0;padding:10px 8px;font-size:12px;white-space:normal;text-align:center}
+	.sidebar-bottom{display:block;margin-top:8px}
+	.sidebar-bottom .user-chip{display:none}
+	.sidebar-bottom .nav-item{width:100%;justify-content:center;border-top:1px solid var(--line);border-radius:0;padding:9px}
+	.main-content{padding:20px 12px calc(38px + env(safe-area-inset-bottom))}
+	.topbar{align-items:center;margin-bottom:18px}
+	.topbar h1{font-size:19px;line-height:1.15;margin-top:5px}
+	.secure-pill{flex:0 0 auto;font-size:0;padding:9px}
+	.secure-pill svg{display:block}
+	.hero-strip{padding:19px 17px}
+	.hero-strip h2{font-size:26px;line-height:1.05}
+	.hero-strip p{font-size:13px;line-height:1.45}
+	.verification-state{margin-top:16px}
+	.panel{padding:16px}
+	.panel-heading{gap:12px;align-items:flex-start}
+	.panel-heading h3{font-size:18px}
+	.action-button{min-height:50px}
+	.checks{grid-template-columns:1fr;gap:8px}
+	.history-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:8px 12px;align-items:start;font-size:12px}
+	.history-row>*{min-width:0}
+	.attendance-history-row{padding:13px 0}
+	.attendance-history-row>b{grid-column:1/-1}
+	.attendance-history-row .location-details{min-width:0}
+	.history-row .table-action{width:100%;font-size:11px;padding:8px}
+	.employee-form{grid-template-columns:1fr;gap:14px}
+	.employee-form button{grid-column:auto;width:100%}
+	.person-row{min-height:52px;padding:12px 0}
+	.calendar-weekdays,.calendar-grid{gap:3px;margin-top:14px}
+	.calendar-weekdays{margin-top:18px}
+	.calendar-day{min-height:48px;padding:5px}
+	.calendar-day small{font-size:8px;margin-top:4px}
+	.stats-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+	.stat-card{min-width:0;padding:13px}
+	.stat-card strong{font-size:24px}
+	.date-picker{width:100%}
+	.date-picker input{width:100%}
+	.table-panel{overflow:hidden}
+	.table-scroll table{min-width:700px}
+	.login-visual{min-height:320px;padding:28px 20px}
+	.visual-copy{margin:30px 0 24px}
+	.visual-copy h1{font-size:clamp(42px,14vw,58px);line-height:.95;letter-spacing:-1px}
+	.login-card{padding:28px 20px}
+	.login-card h2{font-size:24px}
+	.login-card .primary-button{width:100%;justify-content:center}
+	.error-box,.success-box{align-items:flex-start;line-height:1.4;overflow-wrap:anywhere}
+}
+
+@media (max-width: 359px){
+	.main-content{padding-inline:9px}
+	.sidebar{padding-inline:9px}
+	.panel{padding:13px}
+	.hero-strip{padding:17px 14px}
+	.history-row{grid-template-columns:1fr;gap:4px}
+	.history-row>span:first-child{color:var(--muted)}
+	.history-row .location-details{margin-bottom:5px}
+}
+
+@media (orientation: landscape) and (max-height: 520px){
+	.sidebar{padding-block:9px}
+	.sidebar .workspace-label{margin:18px 12px 8px}
+	.sidebar nav{gap:3px}
+	.nav-item{padding-block:8px}
+	.main-content{padding-top:14px;padding-bottom:28px}
+	.topbar{margin-bottom:14px}
+	.hero-strip{padding:15px 18px}
+	.hero-strip h2{font-size:23px}
+	.login-page{min-height:100svh}
+	.login-visual{min-height:300px;padding-block:20px}
+	.visual-copy{margin:18px 0}
+	.login-card{padding-block:22px}
+	.panel{padding:14px}
+}
+
+@media (min-width: 601px) and (max-width: 1024px){
+	.sidebar{width:220px}
+	.main-content{padding-inline:24px}
+	.admin-people-grid{grid-template-columns:1fr}
+	.admin-people-grid .panel:last-child{grid-column:auto}
+}
