@@ -1,10 +1,37 @@
 from datetime import date, timedelta
 from io import BytesIO
+import secrets
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
-from app.core.security import require_admin
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from app.core.config import get_settings
+from app.core.security import decode_access_token, require_admin
 from app.db.mongodb import get_db
+from app.services.photo_service import cleanup_expired_photos
+
+optional_bearer = HTTPBearer(auto_error=False)
+
+
+def require_photo_cleanup_access(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_bearer),
+    x_photo_cleanup_secret: str | None = Header(default=None),
+) -> dict:
+    settings = get_settings()
+    configured_secret = settings.photo_cleanup_secret
+    if configured_secret:
+        if x_photo_cleanup_secret and secrets.compare_digest(x_photo_cleanup_secret, configured_secret):
+            return {"role": "cron"}
+        if credentials and secrets.compare_digest(credentials.credentials, configured_secret):
+            return {"role": "cron"}
+    if credentials:
+        try:
+            claims = decode_access_token(credentials.credentials)
+        except HTTPException:
+            claims = None
+        if claims and claims.get("role") == "admin":
+            return claims
+    raise HTTPException(status_code=403, detail="Photo cleanup requires administrator access or a valid cleanup secret")
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -59,7 +86,7 @@ def export_attendance(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Attendance"
-    headers = ["Date", "Employee ID", "Employee", "Email", "Department", "Check In", "Check In Location", "Check Out", "Check Out Location", "Status"]
+    headers = ["Date", "Employee ID", "Employee", "Email", "Department", "Check In", "Check In Location", "Check-in Photo", "Check Out", "Check Out Location", "Check-out Photo", "Status"]
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True)
@@ -68,7 +95,10 @@ def export_attendance(
         sheet.append([
             record.get("date"), record.get("employee_id"), employee.get("full_name", ""), employee.get("email", ""),
             employee.get("department", ""), record.get("check_in_time"), format_location(record.get("check_in_location")),
-            record.get("check_out_time"), format_location(record.get("check_out_location")), record.get("final_status"),
+            "Yes" if record.get("check_in_photo_reference") else "No",
+            record.get("check_out_time"), format_location(record.get("check_out_location")),
+            "Yes" if record.get("check_out_photo_reference") else "No",
+            record.get("final_status"),
         ])
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
@@ -84,3 +114,9 @@ def export_attendance(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.api_route("/photos/cleanup", methods=["GET", "POST"])
+def run_expired_photo_cleanup(_access: dict = Depends(require_photo_cleanup_access)):
+    result = cleanup_expired_photos()
+    return {"message": "Expired attendance photos were cleaned up", **result}

@@ -15,6 +15,7 @@ class AttendanceResponse(BaseModel):
     reason: str | None = None
     message: str | None = None
     timestamp: datetime | None = None
+    attendance_id: str | None = None
 
 class AttendanceRecord(BaseModel):
     attendance_id: str

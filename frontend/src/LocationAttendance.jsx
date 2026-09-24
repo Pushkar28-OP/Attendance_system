@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Check, MapPin, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Camera, Check, MapPin, X } from 'lucide-react'
 import api from './services/api'
 import { formatKolkataDate, formatKolkataTime, kolkataDateKey } from './time'
 
@@ -58,15 +58,36 @@ function requestFailureMessage(error) {
   return error.message || 'Attendance could not be recorded.'
 }
 
+function cameraFailureMessage(error) {
+  if (!window.isSecureContext) return 'Camera requires localhost or HTTPS. Open the app on localhost/127.0.0.1 or serve it over HTTPS.'
+  if (!navigator.mediaDevices?.getUserMedia) return 'This browser does not support an in-page camera.'
+  if (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError') return 'Camera permission was denied. Allow camera access in the browser, then try again.'
+  if (error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError' || error?.name === 'NotReadableError') return 'No camera is available, or it is already in use. Check device camera access and try again.'
+  if (error?.name === 'SecurityError' || error?.message === 'unsupported') return 'Camera requires localhost or HTTPS.'
+  return 'Camera unavailable. Allow camera access and try again.'
+}
+
+function stopMediaStream(stream) {
+  stream?.getTracks?.().forEach(track => track.stop())
+}
+
 export default function LocationAttendance() {
   const [history, setHistory] = useState([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [locationDiagnostics, setLocationDiagnostics] = useState(null)
+  const [cameraPhase, setCameraPhase] = useState('idle')
+  const [cameraSession, setCameraSession] = useState(0)
+  const [photoFile, setPhotoFile] = useState(null)
+  const [photoPreview, setPhotoPreview] = useState('')
+  const videoRef = useRef(null)
+  const streamRef = useRef(null)
+  const photoPreviewRef = useRef('')
   const today = kolkataDateKey()
   const todayRecord = history.find(item => item.date === today)
   const action = todayRecord?.check_in_time && !todayRecord?.check_out_time ? 'check_out' : 'check_in'
+  const actionLabel = action === 'check_in' ? 'Check In' : 'Check Out'
 
   async function loadHistory() {
     const { data } = await api.get('/api/attendance/mine')
@@ -75,6 +96,50 @@ export default function LocationAttendance() {
   }
 
   useEffect(() => { loadHistory().catch(() => setError('Could not load attendance history.')) }, [])
+
+  useEffect(() => () => {
+    stopMediaStream(streamRef.current)
+    streamRef.current = null
+    if (photoPreviewRef.current) URL.revokeObjectURL(photoPreviewRef.current)
+  }, [])
+
+  useEffect(() => {
+    if (cameraPhase !== 'live') return undefined
+    let cancelled = false
+    async function startCamera() {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error('unsupported'), { name: 'SecurityError' })
+        if (!window.isSecureContext) throw Object.assign(new Error('insecure'), { name: 'SecurityError' })
+        let stream
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+        } catch (firstError) {
+          if (firstError?.name === 'NotAllowedError' || firstError?.name === 'PermissionDeniedError') throw firstError
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+        }
+        if (cancelled) {
+          stopMediaStream(stream)
+          return
+        }
+        streamRef.current = stream
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          await videoRef.current.play()
+        }
+      } catch (cameraError) {
+        if (cancelled) return
+        setCameraPhase('idle')
+        setError(cameraFailureMessage(cameraError))
+      }
+    }
+    startCamera()
+    return () => {
+      cancelled = true
+      stopMediaStream(streamRef.current)
+      streamRef.current = null
+      if (videoRef.current) videoRef.current.srcObject = null
+    }
+  }, [cameraPhase, cameraSession])
 
   async function getLocationOnce(onStatus) {
     const diagnosticBase = { device: detectDevice(), browser: detectBrowser(), secureContext: window.isSecureContext, permission: 'unknown', readings: [], selected: null, watchDurationMs: 0 }
@@ -128,7 +193,69 @@ export default function LocationAttendance() {
     })
   }
 
+  function clearCapturedPhoto() {
+    if (photoPreviewRef.current) URL.revokeObjectURL(photoPreviewRef.current)
+    photoPreviewRef.current = ''
+    setPhotoFile(null)
+    setPhotoPreview('')
+  }
+
+  function openCamera() {
+    setError('')
+    setMessage('')
+    clearCapturedPhoto()
+    setCameraSession(value => value + 1)
+    setCameraPhase('live')
+  }
+
+  function cancelCamera() {
+    setCameraPhase('idle')
+    clearCapturedPhoto()
+    setMessage('')
+  }
+
+  function retakePhoto() {
+    setError('')
+    setMessage('')
+    clearCapturedPhoto()
+    setCameraSession(value => value + 1)
+    setCameraPhase('live')
+  }
+
+  function takePhoto() {
+    const video = videoRef.current
+    if (!video || !video.videoWidth) {
+      setError('Camera is not ready yet. Wait for the live preview, then take the photo.')
+      return
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    canvas.getContext('2d').drawImage(video, 0, 0)
+    canvas.toBlob(blob => {
+      if (!blob) {
+        setError('Could not capture a photo from the camera.')
+        return
+      }
+      stopMediaStream(streamRef.current)
+      streamRef.current = null
+      if (videoRef.current) videoRef.current.srcObject = null
+      clearCapturedPhoto()
+      const previewUrl = URL.createObjectURL(blob)
+      photoPreviewRef.current = previewUrl
+      setPhotoFile(new File([blob], 'attendance.jpg', { type: blob.type || 'image/jpeg' }))
+      setPhotoPreview(previewUrl)
+      setCameraPhase('preview')
+      setError('')
+      setMessage('Review your photo before recording attendance.')
+    }, 'image/jpeg', 0.92)
+  }
+
   async function recordAttendance() {
+    if (cameraPhase !== 'preview' || !photoFile) {
+      openCamera()
+      return
+    }
     setBusy(true)
     setError('')
     setMessage('Getting your location...')
@@ -137,7 +264,14 @@ export default function LocationAttendance() {
       if (location.latitude === null || location.longitude === null) {
         setMessage(`${warning} Recording attendance without location.`)
       }
-      const { data } = await api.post('/api/attendance/verify', { ...location, action })
+      const formData = new FormData()
+      formData.append('action', action)
+      if (location.latitude != null) formData.append('latitude', location.latitude)
+      if (location.longitude != null) formData.append('longitude', location.longitude)
+      if (location.accuracy != null) formData.append('accuracy', location.accuracy)
+      formData.append('source', location.source || 'browser')
+      formData.append('photo', photoFile)
+      const { data } = await api.post('/api/attendance/verify-with-photo', formData)
       if (!data.success) throw new Error(data.message || 'Attendance could not be recorded.')
       const refreshedHistory = await loadHistory()
       const record = refreshedHistory.find(item => item.date === today)
@@ -145,6 +279,8 @@ export default function LocationAttendance() {
       setLocationDiagnostics(current => current ? ({ ...current, resolvedArea: formatLocation(savedLocation) }) : current)
       const locationNote = location.latitude === null || location.longitude === null ? ` ${reason === 'permission-denied' ? 'Location unavailable — permission denied.' : 'Location unavailable.'}` : ` ${formatLocation(savedLocation)}. ${accuracyLabel(savedLocation?.accuracy)}`
       setMessage(`${action === 'check_in' ? 'Check-in' : 'Check-out'} recorded at ${formatKolkataTime(data.timestamp)} IST.${locationNote}`)
+      setCameraPhase('idle')
+      clearCapturedPhoto()
     } catch (requestError) {
       console.error('Attendance request failed.', { url: requestError.config?.url, status: requestError.response?.status, detail: requestError.response?.data?.detail, message: requestError.message })
       setError(requestFailureMessage(requestError))
@@ -168,8 +304,26 @@ export default function LocationAttendance() {
   }
 
   return <>
-    <section className="hero-strip"><div><span className="eyebrow cyan">TODAY / {formatKolkataDate().toUpperCase()}</span><h2>Record your presence</h2><p>Tap once to record your attendance and current location when available.</p></div><div className="verification-state"><span className="pulse-dot"/> Attendance ready</div></section>
-    <div className="attendance-grid"><section className="panel verification-panel"><div className="panel-heading"><div><span className="eyebrow">AURELIX ATTENDANCE</span><h3>{action === 'check_in' ? 'Check in' : 'Check out'}</h3></div><span className="step-count">LOCATION</span></div><button className="primary-button action-button" type="button" disabled={busy || (action === 'check_in' && todayRecord?.check_in_time) || (action === 'check_out' && todayRecord?.check_out_time)} onClick={recordAttendance}><MapPin size={18}/>{busy ? 'Getting location...' : action === 'check_in' ? 'Record check-in' : 'Record check-out'}</button>{message && <div className="success-box"><Check size={17}/>{message}</div>}{error && <div className="error-box"><X size={16}/>{error}</div>}<div className="checks"><span><MapPin size={15}/> One-time browser location</span><span><Check size={15}/> Server timestamp recorded</span></div>{import.meta.env.DEV && locationDiagnostics && <div className="location-diagnostics"><h4>Development location diagnostics</h4><span>Device: {locationDiagnostics.device}</span><span>Browser: {locationDiagnostics.browser}</span><span>Secure context: {locationDiagnostics.secureContext ? 'yes' : 'no'}</span><span>Permission: {locationDiagnostics.permission}</span><span>Readings: {locationDiagnostics.readings.length}</span>{locationDiagnostics.selected && <><span>Latitude: {locationDiagnostics.selected.latitude}</span><span>Longitude: {locationDiagnostics.selected.longitude}</span><span>Accuracy: {locationDiagnostics.selected.accuracy} meters</span><span>Timestamp: {new Date(locationDiagnostics.selected.timestamp).toISOString()}</span><span>Selected: lowest accuracy reading</span></>}{locationDiagnostics.resolvedArea && <span>Reverse-geocoded area: {locationDiagnostics.resolvedArea}</span>}</div>}</section><section className="panel status-panel"><div className="panel-heading"><h3>Today's status</h3></div><div className={todayRecord?.final_status === 'ABSENT' ? 'big-status absent' : 'big-status'}>{todayRecord?.final_status || 'READY'}<small>{todayRecord?.check_in_time ? `In ${formatKolkataTime(todayRecord.check_in_time)} IST` : 'No check-in recorded'}</small></div><div className="history-list">{todayRecord && <><div className="history-row"><span>Check-in location</span><LocationDetails location={todayRecord.check_in_location}/></div><div className="history-row"><span>Check-out</span><b>{todayRecord.check_out_time ? `${formatKolkataTime(todayRecord.check_out_time)} IST` : 'Open'}</b></div><div className="history-row"><span>Check-out location</span><LocationDetails location={todayRecord.check_out_location}/></div></>}</div></section></div>
+    <section className="hero-strip"><div><span className="eyebrow cyan">TODAY / {formatKolkataDate().toUpperCase()}</span><h2>Record your presence</h2><p>Open the camera on this page, take one photo, then record your attendance and current location when available.</p></div><div className="verification-state"><span className="pulse-dot"/> Attendance ready</div></section>
+    <div className="attendance-grid"><section className="panel verification-panel"><div className="panel-heading"><div><span className="eyebrow">AURELIX ATTENDANCE</span><h3>{action === 'check_in' ? 'Check in' : 'Check out'}</h3></div><span className="step-count">PHOTO</span></div>
+      {cameraPhase === 'idle' && <button className="primary-button action-button" type="button" disabled={busy || (action === 'check_in' && todayRecord?.check_in_time) || (action === 'check_out' && todayRecord?.check_out_time)} onClick={openCamera}><Camera size={18}/>{actionLabel}</button>}
+      {cameraPhase !== 'idle' && <div className="camera-capture" aria-label={`${actionLabel} camera`}>
+        <div className="camera-stage">
+          {cameraPhase === 'live' && <video ref={videoRef} className="camera-preview" autoPlay playsInline muted />}
+          {cameraPhase === 'preview' && photoPreview && <img src={photoPreview} alt="Captured attendance photo" />}
+        </div>
+        <div className="photo-actions">
+          {cameraPhase === 'live' && <>
+            <button className="primary-button" type="button" onClick={takePhoto} disabled={busy}>Take Photo</button>
+            <button className="ghost-button" type="button" onClick={cancelCamera} disabled={busy}>Cancel</button>
+          </>}
+          {cameraPhase === 'preview' && <>
+            <button className="ghost-button" type="button" onClick={retakePhoto} disabled={busy}>Retake</button>
+            <button className="primary-button" type="button" onClick={recordAttendance} disabled={busy}>{busy ? 'Recording...' : `Use Photo & ${actionLabel}`}</button>
+          </>}
+        </div>
+      </div>}
+      {message && <div className="success-box"><Check size={17}/>{message}</div>}{error && <div className="error-box"><X size={16}/>{error}</div>}<div className="checks"><span><Camera size={15}/> Photo required before recording</span><span><MapPin size={15}/> One-time browser location</span><span><Check size={15}/> Server timestamp recorded</span></div>{import.meta.env.DEV && locationDiagnostics && <div className="location-diagnostics"><h4>Development location diagnostics</h4><span>Device: {locationDiagnostics.device}</span><span>Browser: {locationDiagnostics.browser}</span><span>Secure context: {locationDiagnostics.secureContext ? 'yes' : 'no'}</span><span>Permission: {locationDiagnostics.permission}</span><span>Readings: {locationDiagnostics.readings.length}</span>{locationDiagnostics.selected && <><span>Latitude: {locationDiagnostics.selected.latitude}</span><span>Longitude: {locationDiagnostics.selected.longitude}</span><span>Accuracy: {locationDiagnostics.selected.accuracy} meters</span><span>Timestamp: {new Date(locationDiagnostics.selected.timestamp).toISOString()}</span><span>Selected: lowest accuracy reading</span></>}{locationDiagnostics.resolvedArea && <span>Reverse-geocoded area: {locationDiagnostics.resolvedArea}</span>}</div>}</section><section className="panel status-panel"><div className="panel-heading"><h3>Today's status</h3></div><div className={todayRecord?.final_status === 'ABSENT' ? 'big-status absent' : 'big-status'}>{todayRecord?.final_status || 'READY'}<small>{todayRecord?.check_in_time ? `In ${formatKolkataTime(todayRecord.check_in_time)} IST` : 'No check-in recorded'}</small></div><div className="history-list">{todayRecord && <><div className="history-row"><span>Check-in location</span><LocationDetails location={todayRecord.check_in_location}/></div><div className="history-row"><span>Check-out</span><b>{todayRecord.check_out_time ? `${formatKolkataTime(todayRecord.check_out_time)} IST` : 'Open'}</b></div><div className="history-row"><span>Check-out location</span><LocationDetails location={todayRecord.check_out_location}/></div></>}</div></section></div>
     <section className="panel table-panel"><span className="eyebrow">MY ATTENDANCE</span><h2>Attendance history</h2><div className="history-list">{history.map(item => <div className="history-row attendance-history-row" key={item.attendance_id}><b>{item.date}</b><span>{item.check_in_time ? `${formatKolkataTime(item.check_in_time)} IST` : '-'}</span><LocationDetails location={item.check_in_location}/><span>{item.check_out_time ? `${formatKolkataTime(item.check_out_time)} IST` : 'Open'}</span><LocationDetails location={item.check_out_location}/><span className={statusBadgeClass(item.final_status)}>{item.final_status}</span>{item.check_in_time && <button className="ghost-button table-action" onClick={() => undo(item, 'check_in')}>Undo check-in</button>}{item.check_out_time && <button className="ghost-button table-action" onClick={() => undo(item, 'check_out')}>Undo check-out</button>}</div>)}</div></section>
   </>
 }

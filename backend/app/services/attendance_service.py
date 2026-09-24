@@ -48,7 +48,7 @@ def _record_audit_event(db, employee_id: str, action: str, location_available: b
         logger.exception("Attendance recorded but the audit event could not be saved")
 
 
-def verify_and_record(employee: dict, payload) -> dict:
+def verify_and_record(employee: dict, payload, photo_reference: dict | None = None) -> dict:
     db = get_db()
     employee_id = employee["employee_id"]
     now = datetime.now(timezone.utc)
@@ -63,7 +63,7 @@ def verify_and_record(employee: dict, payload) -> dict:
     location = _location(payload)
     if not existing:
         existing = attendance_document(employee_id, today, employee.get("full_name"))
-        existing.update({"final_status": "PRESENT", "check_in_time": now, "check_in_location": location, "updated_at": now})
+        existing.update({"final_status": "PRESENT", "check_in_time": now, "check_in_location": location, "check_in_photo_reference": photo_reference, "updated_at": now})
         try:
             db.attendance.insert_one(existing)
         except Exception:
@@ -71,12 +71,12 @@ def verify_and_record(employee: dict, payload) -> dict:
     elif payload.action == "check_in":
         db.attendance.update_one(
             {"_id": existing["_id"]},
-            {"$set": {"user_name": existing.get("user_name") or employee.get("full_name"), "final_status": "PRESENT", "check_in_time": now, "check_in_location": location, "check_out_time": None, "check_out_location": None, "updated_at": now}},
+            {"$set": {"user_name": existing.get("user_name") or employee.get("full_name"), "final_status": "PRESENT", "check_in_time": now, "check_in_location": location, "check_in_photo_reference": photo_reference, "check_out_time": None, "check_out_location": None, "check_out_photo_reference": None, "updated_at": now}},
         )
     else:
         db.attendance.update_one(
             {"_id": existing["_id"]},
-            {"$set": {"user_name": existing.get("user_name") or employee.get("full_name"), "final_status": "PRESENT", "check_out_time": now, "check_out_location": location, "updated_at": now}},
+            {"$set": {"user_name": existing.get("user_name") or employee.get("full_name"), "final_status": "PRESENT", "check_out_time": now, "check_out_location": location, "check_out_photo_reference": photo_reference, "updated_at": now}},
         )
     _record_audit_event(db, employee_id, payload.action, location is not None)
-    return {"success": True, "status": "PRESENT", "reason": None, "message": "Attendance recorded.", "timestamp": now}
+    return {"success": True, "status": "PRESENT", "reason": None, "message": "Attendance recorded.", "timestamp": now, "attendance_id": existing["attendance_id"]}

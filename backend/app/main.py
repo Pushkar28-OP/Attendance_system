@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -9,9 +10,25 @@ from slowapi.util import get_remote_address
 from app.api import auth, employees, attendance, admin, audit
 from app.core.config import get_settings
 from app.db.mongodb import init_indexes
+from app.services.photo_service import cleanup_expired_photos
 
 logging.basicConfig(level=logging.INFO)
 limiter = Limiter(key_func=get_remote_address)
+
+
+async def _expired_photo_cleanup_loop():
+    interval = get_settings().photo_cleanup_interval_seconds
+    if interval <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.to_thread(cleanup_expired_photos)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Expired attendance photo cleanup failed")
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -19,7 +36,15 @@ async def lifespan(_app: FastAPI):
         init_indexes()
     except Exception:
         logging.exception("MongoDB unavailable; API will start but database operations will fail")
-    yield
+    cleanup_task = asyncio.create_task(_expired_photo_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(title="Aurelix Smart Attendance API", version="1.0.0", lifespan=lifespan)
 app.state.limiter = limiter

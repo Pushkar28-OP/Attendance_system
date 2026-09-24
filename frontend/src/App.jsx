@@ -44,6 +44,54 @@ function Login({ onLogin }) {
   return <div className="login-page"><div className="login-visual"><div className="brand"><span className="brand-mark">A</span><span>AURELIX<small>SMART ATTENDANCE</small></span></div><div className="visual-copy"><span className="eyebrow cyan">ATTENDANCE / TIME / PLACE</span><h1>Presence, recorded.</h1><p>Check in and check out with a secure account, server time, and a one-time location capture.</p></div><div className="signal-grid"><span><b>01</b> SECURE LOGIN</span><span><b>02</b> SERVER TIME</span><span><b>03</b> LOCATION STORED</span></div></div><form className="login-card" onSubmit={submit}><span className="eyebrow">WELCOME BACK</span><h2>Sign in to your workspace</h2><p className="muted">Use your Aurelix credentials to continue.</p><label>Work email<input type="email" required value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} placeholder="you@aurelix.com" /></label><label>Password<input type="password" required value={form.password} onChange={event => setForm({ ...form, password: event.target.value })} placeholder="Password" /></label>{error && <div className="error-box"><X size={16}/>{error}</div>}<button className="primary-button" type="submit">Enter workspace <ArrowRight size={17}/></button><small className="form-note">Protected by JWT authentication and role-based access.</small></form></div>
 }
 
+function AdminPhotoModal({ viewer, onClose }) {
+  const [url, setUrl] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const eventLabel = viewer.event === 'check_in' ? 'Check In' : 'Check Out'
+  useEffect(() => {
+    const onKey = event => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  useEffect(() => {
+    let objectUrl = ''
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    setUrl('')
+    api.get(`/api/attendance/admin/${viewer.attendanceId}/photo?event=${viewer.event}`, { responseType: 'blob' })
+      .then(({ data }) => {
+        if (cancelled) return
+        if (data?.type && data.type.includes('application/json')) {
+          setError('Photo expired or unavailable')
+          return
+        }
+        objectUrl = URL.createObjectURL(data)
+        setUrl(objectUrl)
+      })
+      .catch(() => { if (!cancelled) setError('Photo expired or unavailable') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [viewer.attendanceId, viewer.event])
+  return (
+    <div className="photo-capture-overlay admin-photo-modal" role="dialog" aria-modal="true" aria-label={`${eventLabel} attendance photo`} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
+      <div className="photo-capture-card admin-photo-card">
+        <span className="eyebrow">ATTENDANCE PHOTO</span>
+        <h3>{eventLabel} photo</h3>
+        <p className="admin-photo-meta"><b>{viewer.employee}</b><small>Event: {eventLabel}</small><small>Attendance date: {viewer.date || 'Unavailable'}</small><small>Event timestamp: {viewer.timestamp ? `${formatKolkataTime(viewer.timestamp)} IST` : 'Unavailable'}</small></p>
+        {loading && <div className="admin-photo-loading">Loading photo...</div>}
+        {error && <div className="error-box"><X size={16}/>{error}</div>}
+        {url && <img src={url} alt={`${eventLabel} attendance photo for ${viewer.employee}`} />}
+        <button className="ghost-button admin-photo-close" type="button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}
+
 function AdminDashboard() {
   async function clearRecord(attendanceId) {
     if (!window.confirm('Clear this attendance record?')) return
@@ -56,6 +104,7 @@ function AdminDashboard() {
   const [stats, setStats] = useState({})
   const [records, setRecords] = useState([])
   const [monthRecords, setMonthRecords] = useState([])
+  const [photoViewer, setPhotoViewer] = useState(null)
   useEffect(() => { api.get(`/api/attendance/admin?date=${selectedDate}`).then(({ data }) => { setRecords(data); const present = data.filter(item => item.final_status === 'PRESENT').length; setStats({ total_employees: data.length, present_today: present, absent_today: data.length - present }) }).catch(() => {}) }, [selectedDate])
   useEffect(() => { api.get(`/api/attendance/admin/month?month=${month}`).then(({ data }) => setMonthRecords(data)).catch(() => {}) }, [month])
   function chooseDate(value) { if (value) { setSelectedDate(value); setMonth(value.slice(0, 7)) } }
@@ -82,7 +131,20 @@ function AdminDashboard() {
     link.click()
     URL.revokeObjectURL(url)
   }
-  return <><section className="hero-strip compact"><div><span className="eyebrow cyan">LIVE OPERATIONS / OVERVIEW</span><h2>Attendance register</h2><p>Review employee attendance by day and export the stored check-in/check-out records.</p></div><label className="date-picker">Selected day<input type="date" value={selectedDate} onChange={event => chooseDate(event.target.value)} /></label></section><div className="stats-grid">{[['TOTAL EMPLOYEES', stats.total_employees, Users], ['PRESENT', stats.present_today, Check], ['ABSENT', stats.absent_today, X]].map(([label, value, Icon]) => <div className="stat-card" key={label}><Icon size={17}/><span>{label}</span><strong>{value ?? '-'}</strong></div>)}</div><div className="admin-dashboard-grid"><section className="panel calendar-panel"><div className="panel-heading"><div><span className="eyebrow">ATTENDANCE CALENDAR</span><h3>{new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h3></div><div className="calendar-actions"><button className="icon-button" title="Previous month" onClick={() => shiftMonth(-1)}><ArrowLeft size={16}/></button><button className="icon-button" title="Next month" onClick={() => shiftMonth(1)}><ArrowRight size={16}/></button></div></div><div className="calendar-weekdays">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => <span key={day}>{day}</span>)}</div><div className="calendar-grid">{renderCalendar()}</div></section><section className="panel table-panel"><div className="panel-heading"><div><span className="eyebrow">ATTENDANCE LOG / {selectedDate}</span><h3>Daily Attendance Register</h3></div><button className="ghost-button" onClick={exportData}>Export data</button></div><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Department</th><th>In</th><th>In location</th><th>Out</th><th>Out location</th><th>Status</th><th>Action</th></tr></thead><tbody>{records.map(item => <tr key={item.attendance_id}><td><b>{item.employee?.full_name || item.user_name || item.employee_id}</b><small>{item.employee_id}</small></td><td>{item.employee?.department || '-'}</td><td>{item.check_in_time ? `${formatKolkataTime(item.check_in_time)} IST` : '-'}</td><td>{formatLocation(item.check_in_location)}</td><td>{item.check_out_time ? `${formatKolkataTime(item.check_out_time)} IST` : 'Open'}</td><td>{formatLocation(item.check_out_location)}</td><td><span className={item.final_status === 'PRESENT' ? 'badge verified' : 'badge absent'}>{item.final_status}</span></td><td><button className="ghost-button table-action" onClick={() => clearRecord(item.attendance_id)} disabled={item.attendance_id.startsWith('absent-')}>Undo record</button></td></tr>)}</tbody></table>{!records.length && <div className="empty-state">No active employees found.</div>}</div></section></div></>
+  function openPhoto(record, event) {
+    setPhotoViewer({
+      attendanceId: record.attendance_id,
+      event,
+      employee: record.employee?.full_name || record.user_name || record.employee_id,
+      date: record.date,
+      timestamp: event === 'check_in' ? record.check_in_time : record.check_out_time,
+    })
+  }
+  function photoCell(record, event) {
+    if (!record[`${event}_photo_available`]) return <span className="muted">-</span>
+    return <button className="ghost-button table-action" type="button" onClick={() => openPhoto(record, event)}>{event === 'check_in' ? 'View Check-In Photo' : 'View Check-Out Photo'}</button>
+  }
+  return <><section className="hero-strip compact"><div><span className="eyebrow cyan">LIVE OPERATIONS / OVERVIEW</span><h2>Attendance register</h2><p>Review employee attendance by day and export the stored check-in/check-out records.</p></div><label className="date-picker">Selected day<input type="date" value={selectedDate} onChange={event => chooseDate(event.target.value)} /></label></section><div className="stats-grid">{[['TOTAL EMPLOYEES', stats.total_employees, Users], ['PRESENT', stats.present_today, Check], ['ABSENT', stats.absent_today, X]].map(([label, value, Icon]) => <div className="stat-card" key={label}><Icon size={17}/><span>{label}</span><strong>{value ?? '-'}</strong></div>)}</div><div className="admin-dashboard-grid"><section className="panel calendar-panel"><div className="panel-heading"><div><span className="eyebrow">ATTENDANCE CALENDAR</span><h3>{new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h3></div><div className="calendar-actions"><button className="icon-button" title="Previous month" onClick={() => shiftMonth(-1)}><ArrowLeft size={16}/></button><button className="icon-button" title="Next month" onClick={() => shiftMonth(1)}><ArrowRight size={16}/></button></div></div><div className="calendar-weekdays">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => <span key={day}>{day}</span>)}</div><div className="calendar-grid">{renderCalendar()}</div></section><section className="panel table-panel"><div className="panel-heading"><div><span className="eyebrow">ATTENDANCE LOG / {selectedDate}</span><h3>Daily Attendance Register</h3></div><button className="ghost-button" onClick={exportData}>Export data</button></div><div className="table-scroll"><table><thead><tr><th>Employee</th><th>Department</th><th>In</th><th>In location</th><th>Check-in Photo</th><th>Out</th><th>Out location</th><th>Check-out Photo</th><th>Status</th><th>Action</th></tr></thead><tbody>{records.map(item => <tr key={item.attendance_id}><td><b>{item.employee?.full_name || item.user_name || item.employee_id}</b><small>{item.employee_id}</small></td><td>{item.employee?.department || '-'}</td><td>{item.check_in_time ? `${formatKolkataTime(item.check_in_time)} IST` : '-'}</td><td>{formatLocation(item.check_in_location)}</td><td>{photoCell(item, 'check_in')}</td><td>{item.check_out_time ? `${formatKolkataTime(item.check_out_time)} IST` : 'Open'}</td><td>{formatLocation(item.check_out_location)}</td><td>{photoCell(item, 'check_out')}</td><td><span className={item.final_status === 'PRESENT' ? 'badge verified' : 'badge absent'}>{item.final_status}</span></td><td><button className="ghost-button table-action" onClick={() => clearRecord(item.attendance_id)} disabled={item.attendance_id.startsWith('absent-')}>Undo record</button></td></tr>)}</tbody></table>{!records.length && <div className="empty-state">No active employees found.</div>}</div></section></div>{photoViewer && <AdminPhotoModal viewer={photoViewer} onClose={() => setPhotoViewer(null)} />}</>
 }
 
 function CreateEmployeePanel({ onCreated }) {

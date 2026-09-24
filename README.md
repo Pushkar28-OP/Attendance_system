@@ -80,7 +80,33 @@ Open `http://localhost:5173`.
 | `REVERSE_GEOCODE_TIMEOUT_SECONDS` | Maximum reverse-geocoding request time |
 | `GOOGLE_MAPS_API_KEY` | Optional backend-only Google Maps Geocoding API key; when set, Google address components are used |
 | `GOOGLE_GEOCODE_URL` | Google Geocoding endpoint |
+| `PHOTO_RETENTION_HOURS` | Attendance photo lifetime in GridFS; defaults to 24 |
+| `PHOTO_CLEANUP_INTERVAL_SECONDS` | How often a long-running API process deletes expired photos; defaults to 900. Set to `0` to disable the in-process loop |
+| `PHOTO_CLEANUP_SECRET` | Shared secret for the protected photo cleanup endpoint used by external cron jobs |
 | `VITE_API_URL` | Frontend API base URL |
+
+### Vercel production configuration
+
+The Vercel deployment uses the same-origin API path: the React frontend calls `/api`, and `vercel.json` rewrites that path to the deployed FastAPI service. Leave `VITE_API_URL` blank for this combined Vercel deployment. Do not set it to `localhost`.
+
+Configure these Vercel Production environment variables before using login or attendance:
+
+| Variable | Required value |
+| --- | --- |
+| `MONGODB_URI` | Publicly reachable MongoDB Atlas connection string; never commit or print it |
+| `DATABASE_NAME` | Production MongoDB database name |
+| `JWT_SECRET` | Long random production signing secret |
+| `JWT_ALGORITHM` | Normally `HS256` |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Production token lifetime |
+| `CORS_ORIGINS` | JSON array containing the deployed Vercel origin, for example `["https://attendance-system-rho-six.vercel.app"]` |
+
+The backend must use a hosted MongoDB/Atlas instance. The local default `mongodb://localhost:27017` is only suitable for local development and causes production login requests to fail because Vercel cannot access the developer machine's MongoDB.
+
+Attendance photos are private GridFS objects and expire after 24 hours. A long-running Uvicorn process also runs cleanup on an interval. Serverless/Vercel deployments should call the protected cleanup endpoint on a schedule, for example hourly:
+
+`GET` or `POST` `/api/admin/photos/cleanup` with header `X-Photo-Cleanup-Secret: <PHOTO_CLEANUP_SECRET>`
+
+or `Authorization: Bearer <PHOTO_CLEANUP_SECRET>`. Do not expose this route without the secret or an admin JWT.
 
 ## First Admin And Employee Registration
 
@@ -99,12 +125,12 @@ Sign in as the admin and open **People** to create and manage employees.
 ## Attendance Flow
 
 1. Employee signs in and receives a JWT.
-2. Employee clicks **Check in** or **Check out**.
-3. The frontend requests the current browser location once.
-4. If location is available, latitude, longitude, and accuracy are sent to the backend. The backend resolves a concise area name through reverse geocoding; if that lookup fails, the attendance action still continues with the coordinates.
-5. The backend records the official server-side timestamp, authenticated employee identity, coordinates, and resolved area when available.
+2. Employee clicks **Check in** or **Check out**. The same attendance page opens an in-page camera preview using `navigator.mediaDevices.getUserMedia` (rear/environment camera when available). The employee takes a photo, can retake it, then confirms **Use Photo & Check In** or **Use Photo & Check Out**. Only that confirmed photo is uploaded. File attachment is not the normal flow.
+3. After the photo is confirmed, the frontend requests the current browser location once.
+4. If location is available, latitude, longitude, and accuracy are sent to the backend together with the photo. The backend resolves a concise area name through reverse geocoding; if that lookup fails, the attendance action still continues with the coordinates.
+5. The backend records the official server-side timestamp, authenticated employee identity, coordinates, and resolved area when available. The photo is stored privately in MongoDB GridFS and expires after 24 hours.
 6. The backend prevents a second check-in before check-out and prevents check-out without an active check-in.
-7. Attendance history displays the resolved area and city for check-in/check-out locations and retains coordinates and accuracy in the stored record.
+7. Attendance history displays the resolved area and city for check-in/check-out locations and retains coordinates and accuracy in the stored record. Admins can view check-in/check-out photos from the attendance register until they expire.
 
 The application does not continuously track employees and does not reject attendance based on coordinates.
 

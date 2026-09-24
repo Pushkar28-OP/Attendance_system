@@ -1,10 +1,15 @@
+import asyncio
 from datetime import datetime, timezone
+from io import BytesIO
 from types import SimpleNamespace
+
+import pytest
 
 from app.services import attendance_service
 from app.services import geocoding_service
 from app.core.security import create_access_token, decode_access_token, hash_password, verify_password
 from app.models.attendance import public_attendance
+from app.services.photo_service import prepare_photo
 
 
 def test_password_hashing_and_jwt():
@@ -83,6 +88,21 @@ def test_check_in_and_check_out_store_the_submitted_locations(monkeypatch):
     assert fake_db.attendance.document["check_in_location"] == {"latitude": 18.5204, "longitude": 73.8567, "accuracy": 12.5, "source": "browser", "area": "Baner", "city": "Pune"}
     assert attendance_service.verify_and_record(employee, check_out)["success"] is True
     assert fake_db.attendance.document["check_out_location"] == {"latitude": 18.5210, "longitude": 73.8572, "accuracy": 18.0, "source": "browser", "area": "Baner", "city": "Pune"}
+
+
+def test_check_in_and_check_out_store_confirmed_photo_references(monkeypatch):
+    fake_db = FakeDb(None)
+    monkeypatch.setattr(attendance_service, "get_db", lambda: fake_db)
+    monkeypatch.setattr(attendance_service, "reverse_geocode_location", lambda latitude, longitude: None)
+    employee = {"employee_id": "EMP-1", "full_name": "Test Employee"}
+    check_in_photo = {"file_id": "check-in-file", "content_type": "image/jpeg"}
+    check_out_photo = {"file_id": "check-out-file", "content_type": "image/jpeg"}
+
+    attendance_service.verify_and_record(employee, SimpleNamespace(action="check_in", latitude=None, longitude=None, accuracy=None, source="browser"), check_in_photo)
+    attendance_service.verify_and_record(employee, SimpleNamespace(action="check_out", latitude=None, longitude=None, accuracy=None, source="browser"), check_out_photo)
+
+    assert fake_db.attendance.document["check_in_photo_reference"] == check_in_photo
+    assert fake_db.attendance.document["check_out_photo_reference"] == check_out_photo
 
 
 def test_reverse_geocoding_failure_keeps_attendance_working(monkeypatch):
@@ -202,6 +222,44 @@ def test_public_attendance_normalizes_legacy_naive_mongo_timestamps_to_utc():
 
     assert record["check_in_time"].tzinfo == timezone.utc
     assert record["check_in_time"].isoformat() == "2026-09-22T11:28:04+00:00"
+
+
+def test_photo_preparation_normalizes_supported_images_and_strips_metadata():
+    from PIL import Image
+    from starlette.datastructures import UploadFile
+
+    image = Image.new("RGB", (12, 12), "navy")
+    source = BytesIO()
+    image.save(source, format="PNG")
+    source.seek(0)
+
+    data, content_type = asyncio.run(prepare_photo(UploadFile(filename="capture.png", file=source, headers={"content-type": "image/png"})))
+
+    assert content_type == "image/jpeg"
+    with Image.open(BytesIO(data)) as normalized:
+        assert normalized.format == "JPEG"
+        assert normalized.getexif() == {}
+
+
+def test_photo_preparation_rejects_unsupported_media_type():
+    from starlette.datastructures import UploadFile
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(prepare_photo(UploadFile(filename="capture.txt", file=BytesIO(b"not an image"), headers={"content-type": "text/plain"})))
+
+    assert error.value.status_code == 415
+
+
+def test_photo_preparation_rejects_oversized_upload():
+    from starlette.datastructures import UploadFile
+    from fastapi import HTTPException
+    from app.services.photo_service import MAX_PHOTO_BYTES
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(prepare_photo(UploadFile(filename="large.jpg", file=BytesIO(b"x" * (MAX_PHOTO_BYTES + 1)), headers={"content-type": "image/jpeg"})))
+
+    assert error.value.status_code == 413
 
 
 def test_audit_failure_does_not_turn_a_recorded_check_in_into_a_server_error(monkeypatch):
