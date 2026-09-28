@@ -1,14 +1,17 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 import secrets
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from openpyxl.drawing.image import Image as ExcelImage
+from PIL import Image
 from app.core.config import get_settings
 from app.core.security import decode_access_token, require_admin
 from app.db.mongodb import get_db
-from app.services.photo_service import cleanup_expired_photos
+from app.services.photo_service import PhotoExpiredError, cleanup_expired_photos, open_photo
 
 optional_bearer = HTTPBearer(auto_error=False)
 
@@ -47,27 +50,100 @@ def format_location(location: dict | None) -> str:
     suffix = f", +/- {round(accuracy)} m" if accuracy is not None else ""
     return f"{location['latitude']:.5f}, {location['longitude']:.5f}{suffix}"
 
+
+def excel_cell_value(value):
+    """OpenPyXL cannot serialize timezone-aware datetimes from MongoDB."""
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+def resolve_export_date_range(
+    export_range: Literal["day", "week", "month", "months", "year"],
+    anchor_date: date | None,
+    start_month: date | None,
+    end_month: date | None,
+) -> tuple[date, date]:
+    """Normalize export inputs into the server-controlled inclusive date range."""
+    if export_range == "months":
+        if not start_month or not end_month:
+            raise HTTPException(status_code=422, detail="Start and end months are required for a multiple-month export")
+        start_date = start_month.replace(day=1)
+        end_month_start = end_month.replace(day=1)
+        if start_date > end_month_start:
+            raise HTTPException(status_code=422, detail="Start month must not be after end month")
+        next_month = (end_month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return start_date, next_month - timedelta(days=1)
+
+    selected_date = anchor_date or date.today()
+    if export_range == "day":
+        return selected_date, selected_date
+    if export_range == "week":
+        start_date = selected_date - timedelta(days=selected_date.weekday())
+        return start_date, start_date + timedelta(days=6)
+    if export_range == "month":
+        start_date = selected_date.replace(day=1)
+        next_month = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return start_date, next_month - timedelta(days=1)
+    return selected_date.replace(month=1, day=1), selected_date.replace(month=12, day=31)
+
+
+def export_filename(export_range: str, start_date: date, end_date: date) -> str:
+    if export_range == "day":
+        suffix = start_date.isoformat()
+    elif export_range == "week":
+        suffix = f"{start_date.isoformat()}-to-{end_date.isoformat()}"
+    elif export_range == "month":
+        suffix = start_date.strftime("%Y-%m")
+    elif export_range == "months":
+        suffix = f"{start_date.strftime('%Y-%m')}-to-{end_date.strftime('%Y-%m')}"
+    else:
+        suffix = str(start_date.year)
+    return f"aurelix-attendance-{export_range}-{suffix}.xlsx"
+
+
+def embed_attendance_photo(sheet, cell_coordinate: str, reference: dict | None) -> bool:
+    """Embed a retained GridFS photo without exposing its storage identifier."""
+    cell = sheet[cell_coordinate]
+    if not reference:
+        cell.value = "Expired / unavailable"
+        return False
+    try:
+        stream = open_photo(reference)
+        try:
+            photo_data = stream.read()
+        finally:
+            close = getattr(stream, "close", None)
+            if close:
+                close()
+        with Image.open(BytesIO(photo_data)) as source:
+            thumbnail = source.convert("RGB")
+            thumbnail.thumbnail((200, 150), Image.Resampling.LANCZOS)
+            buffer = BytesIO()
+            thumbnail.save(buffer, format="PNG", optimize=True)
+        buffer.seek(0)
+        image = ExcelImage(buffer)
+        image.anchor = cell_coordinate
+        sheet.add_image(image)
+        return True
+    except (PhotoExpiredError, OSError, ValueError, KeyError, TypeError):
+        cell.value = "Expired / unavailable"
+        return False
+    except Exception:
+        # Exports must remain available when a GridFS file was deleted or corrupted.
+        cell.value = "Expired / unavailable"
+        return False
+
 @router.get("/export")
 def export_attendance(
-    export_range: str = Query("day", alias="range", pattern="^(day|week|month|year)$"),
-    anchor_date: date = Query(default_factory=date.today, alias="date"),
+    export_range: Literal["day", "week", "month", "months", "year"] = Query("day", alias="range"),
+    anchor_date: date | None = Query(default=None, alias="date"),
+    start_month: date | None = Query(default=None, alias="start_date"),
+    end_month: date | None = Query(default=None, alias="end_date"),
     _claims: dict = Depends(require_admin),
 ):
     from openpyxl import Workbook
-    from openpyxl.styles import Font
+    from openpyxl.styles import Alignment, Font, PatternFill
 
-    if export_range == "day":
-        start_date = end_date = anchor_date
-    elif export_range == "week":
-        start_date = anchor_date - timedelta(days=anchor_date.weekday())
-        end_date = start_date + timedelta(days=6)
-    elif export_range == "month":
-        start_date = anchor_date.replace(day=1)
-        next_month = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1)
-        end_date = next_month - timedelta(days=1)
-    else:
-        start_date = anchor_date.replace(month=1, day=1)
-        end_date = anchor_date.replace(month=12, day=31)
+    start_date, end_date = resolve_export_date_range(export_range, anchor_date, start_month, end_month)
 
     db = get_db()
     records = list(db.attendance.find(
@@ -89,26 +165,36 @@ def export_attendance(
     headers = ["Date", "Employee ID", "Employee", "Email", "Department", "Check In", "Check In Location", "Check-in Photo", "Check Out", "Check Out Location", "Check-out Photo", "Status"]
     sheet.append(headers)
     for cell in sheet[1]:
-        cell.font = Font(bold=True)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="102B42")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
     for record in records:
         employee = employees.get(record.get("employee_id"), {})
+        row_number = sheet.max_row + 1
         sheet.append([
             record.get("date"), record.get("employee_id"), employee.get("full_name", ""), employee.get("email", ""),
-            employee.get("department", ""), record.get("check_in_time"), format_location(record.get("check_in_location")),
-            "Yes" if record.get("check_in_photo_reference") else "No",
-            record.get("check_out_time"), format_location(record.get("check_out_location")),
-            "Yes" if record.get("check_out_photo_reference") else "No",
+            employee.get("department", ""), excel_cell_value(record.get("check_in_time")), format_location(record.get("check_in_location")),
+            None,
+            excel_cell_value(record.get("check_out_time")), format_location(record.get("check_out_location")),
+            None,
             record.get("final_status"),
         ])
+        has_check_in_photo = embed_attendance_photo(sheet, f"H{row_number}", record.get("check_in_photo_reference"))
+        has_check_out_photo = embed_attendance_photo(sheet, f"K{row_number}", record.get("check_out_photo_reference"))
+        if has_check_in_photo or has_check_out_photo:
+            sheet.row_dimensions[row_number].height = 115
     sheet.freeze_panes = "A2"
     sheet.auto_filter.ref = sheet.dimensions
-    for column in sheet.columns:
-        width = min(max(len(str(cell.value or "")) for cell in column) + 2, 30)
-        sheet.column_dimensions[column[0].column_letter].width = width
+    widths = [14, 16, 24, 30, 20, 23, 28, 31, 23, 28, 31, 14]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + index)].width = width
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
 
     output = BytesIO()
     workbook.save(output)
-    filename = f"aurelix-attendance-{export_range}-{start_date.isoformat()}-{end_date.isoformat()}.xlsx"
+    filename = export_filename(export_range, start_date, end_date)
     return Response(
         content=output.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

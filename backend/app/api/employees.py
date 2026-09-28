@@ -59,6 +59,8 @@ def remove_employee(employee_id: str, claims: dict = Depends(require_admin)):
     employee = db.employees.find_one({"employee_id": employee_id})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
+    if claims["sub"] == employee.get("employee_id"):
+        raise HTTPException(status_code=400, detail="You cannot remove your own administrator account.")
     if employee.get("role") == "admin":
         raise HTTPException(status_code=400, detail="Administrator accounts cannot be removed")
     db.employees.delete_one({"employee_id": employee_id})
